@@ -1,20 +1,22 @@
 name: IDX Tracker 4x/mo
+
 on:
   schedule:
-    - cron: '0 8 * * 1,4' # Mon Thu 08:00 UTC = 15:00 WIB Aceh
+    - cron: '0 1 * * *'
   workflow_dispatch:
+
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-      - name: Install deps
-        run: pip install yfinance pandas requests
-      - name: Run bot
+      - name: Install
+        run: pip install -r requirements.txt
+      - name: Run ShiningStar Telegram
         run: python auto_daily.py
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
