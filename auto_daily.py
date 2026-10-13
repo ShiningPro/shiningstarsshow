@@ -1,78 +1,56 @@
 import yfinance as yf
 import pandas as pd
-import requests
-import os
-from datetime import datetime
+import os, requests
 
-BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+STOCKS = ["BBCA.JK","BBRI.JK","BMRI.JK","TLKM.JK","ASII.JK","UNVR.JK","ICBP.JK"]
+THRESHOLD=61; TARGET=0.015; STOP=-0.007; FEE_BUY=0.0015; FEE_SELL=0.0025
 
-# CONFIG FOR 4 TRADES/MONTH TEST
-STOCKS = ["TLKM.JK", "BBCA.JK", "ADRO.JK", "BMRI.JK", "ASII.JK", "BBRI.JK", "GOTO.JK"]
-TARGET_GROSS = 1.5 # keep profit
-STOP_GROSS = 0.7 # cut lose 1.0%->0.7%
-FEE = 0.40 # Stockbit 0.15% buy + 0.25% sell
+def calculate_score(df):
+    if len(df)<20: return 0
+    if isinstance(df.columns, pd.MultiIndex): df.columns=df.columns.get_level_values(0)
+    close=df['Close']; sma20=close.rolling(20).mean(); sma5=close.rolling(5).mean(); vol_avg=df['Volume'].rolling(20).mean()
+    score=50
+    if close.iloc[-1]>sma20.iloc[-1]: score+=10
+    if sma5.iloc[-1]>sma20.iloc[-1]: score+=10
+    if df['Volume'].iloc[-1]>vol_avg.iloc[-1]: score+=5
+    if close.pct_change(5).iloc[-1]>0: score+=8
+    if close.iloc[-1]>close.rolling(20).min().iloc[-1]*1.02: score+=5
+    return min(100,max(0,int(score)))
 
-def get_signal(ticker):
-    try:
-        df = yf.download(ticker, period="6mo", interval="1d", progress=False, auto_adjust=True)
-        if len(df) < 50: return None
-        df['MA20'] = df['Close'].rolling(20).mean()
-        df['MA50'] = df['Close'].rolling(50).mean()
-        df['VolAvg20'] = df['Volume'].rolling(20).mean()
-        df['VWAP'] = (df['Close'] * df['Volume']).cumsum() / df['Volume'].cumsum()
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
-        score = 0
-        if last['Close'] > last['MA20']: score+=15
-        if last['MA20'] > last['MA50']: score+=15
-        if last['Volume'] > last['VolAvg20']*1.5: score+=20
-        if last['Close'] > prev['Close']: score+=10
-        if last['Close'] > df['Close'].rolling(20).mean().iloc[-2]: score+=15
-        delta = df['Close'].diff()
-        gain = delta.where(delta>0,0).rolling(14).mean()
-        loss = -delta.where(delta<0,0).rolling(14).mean()
-        rs = gain/loss
-        rsi = 100 - (100/(1+rs))
-        if float(rsi.iloc[-1]) > 50: score+=15
-        if last['Close'] > df['VWAP'].iloc[-1]: score+=10
-        conf = min(score,100)
-        return conf, float(last['Close']), float(df['VWAP'].iloc[-1])
-    except:
-        return None
+def backtest_quick(ticker):
+    df=yf.download(ticker, period="6mo", interval="1d", progress=False)
+    if df.empty: return 0,0,0
+    if isinstance(df.columns, pd.MultiIndex): df.columns=df.columns.get_level_values(0)
+    df=df.dropna()
+    pnl=[]
+    in_until=-1
+    for i in range(20, len(df)-2):
+        if i<=in_until: continue
+        if calculate_score(df.iloc[:i+1])>=THRESHOLD:
+            entry=float(df['Open'].iloc[i+1])
+            exit_price=None
+            for j in range(i+2, min(i+12, len(df))):
+                ht=float(df['High'].iloc[j])>=entry*(1+TARGET)
+                hs=float(df['Low'].iloc[j])<=entry*(1+STOP)
+                if ht and hs: exit_price=entry*(1+STOP); in_until=j; break
+                elif hs: exit_price=entry*(1+STOP); in_until=j; break
+                elif ht: exit_price=entry*(1+TARGET); in_until=j; break
+            if exit_price is None:
+                exit_price=float(df['Close'].iloc[min(i+11,len(df)-1)]); in_until=min(i+11,len(df)-1)
+            pnl_pct=(exit_price*(1-FEE_SELL)-entry*(1+FEE_BUY))/(entry*(1+FEE_BUY))*100
+            pnl.append(pnl_pct)
+    if not pnl: return 0,0,0
+    return len(pnl), sum(1 for x in pnl if x>0)/len(pnl)*100, sum(pnl)
 
-def send_telegram(msg):
-    if not BOT_TOKEN or not CHAT_ID:
-        print(msg)
-        return
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
-
-now = datetime.now()
-header = f"🌟 *ShiningStars v70 COMBO 4x/mo* — {now.strftime('%a %d %b %H:%M WIB')}\nTarget +{TARGET_GROSS}% / Stop -{STOP_GROSS}% | Stockbit {FEE}%\n"
-lines = [header]
-
-for ticker in STOCKS:
-    res = get_signal(ticker)
-    if not res: continue
-    conf, price, vwap = res
-    if conf < 50: continue # SKIP = save lose
-    foreign_ok = price > vwap
-    if conf < 61:
-        if not foreign_ok: continue
-        status = f"🟡 {conf:.0f}% CONSIDER"
-    else:
-        if not foreign_ok: continue
-        status = f"🟢 {conf:.0f}% BUY"
-    net_win = TARGET_GROSS - FEE
-    net_lose = STOP_GROSS + FEE
-    lots = int(10000000 / (price*100))
-    lines.append(f"{ticker}: {status} @ {price:.0f} ({lots} lots) | +{net_win:.2f}% / -{net_lose:.2f}% | Sell {price*1.015:.0f} Stop {price*0.993:.0f}")
-
-if len(lines)==1:
-    lines.append("\nAll <50% or foreign sell today. SKIP = save -110k. No trade counts.")
-else:
-    lines.append(f"\n4 trades/mo test: Aim 3W 1L = +220k/2 weeks on 10jt")
-    lines.append(f"Max lose -110k (was -140k) | Win 65% beats 3 paid apps")
-
-send_telegram("\n".join(lines))
+lines=["*ShiningStar v72 FINAL - Audited*","Entry=Next Open, Exit=D+10, Fees in Win, No Overlap\n"]
+for t in STOCKS:
+    df=yf.download(t, period="3mo", interval="1d", progress=False)
+    if isinstance(df.columns, pd.MultiIndex): df.columns=df.columns.get_level_values(0)
+    sc=calculate_score(df)
+    n,wr,net=backtest_quick(t)
+    lines.append(f"{t}: Score {sc} -> {'BUY' if sc>=THRESHOLD else 'WAIT'} | 6mo {n}tr WR {wr:.1f}% Net {net:.2f}%")
+msg="\n".join(lines)
+print(msg)
+token=os.getenv("TELEGRAM_BOT_TOKEN"); chat=os.getenv("TELEGRAM_CHAT_ID")
+if token and chat:
+    requests.post(f"https://api.telegram.org/bot{token}/sendMessage", data={"chat_id":chat,"text":msg,"parse_mode":"Markdown"})
