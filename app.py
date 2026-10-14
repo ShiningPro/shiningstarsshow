@@ -2,13 +2,13 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 
-st.set_page_config(page_title="ShiningStar v73 PROFESSIONAL", layout="wide")
-st.title("ShiningStar v73 - PROFESSIONAL Audited")
+st.set_page_config(page_title="ShiningStar v74.1 PROFESSIONAL", layout="wide")
+st.title("ShiningStar v74.1 - PROFESSIONAL Audited")
 
 STOCKS = ["BBCA.JK","BBRI.JK","BMRI.JK","TLKM.JK","ASII.JK","UNVR.JK","ICBP.JK","TRUK.JK","CBRE.JK","RMKO.JK","BREN.JK","CUAN.JK","BBYB.JK","GOTO.JK","BUKA.JK","PTRO.JK","INET.JK","WIFI.JK","BIPI.JK","BRMS.JK"]
-THRESHOLD = 61
-TARGET = 0.015
-STOP = -0.007
+THRESHOLD = 75
+TARGET = 0.04
+STOP = -0.02
 FEE_BUY = 0.0015
 FEE_SELL = 0.0025
 
@@ -21,19 +21,32 @@ def calculate_score(df):
         if 'Close' not in df.columns or 'Volume' not in df.columns:
             return 0
         close = df['Close']
+        vol = df['Volume']
         if close.isna().all():
             return 0
         sma20 = close.rolling(20).mean()
         sma5 = close.rolling(5).mean()
-        vol_avg = df['Volume'].rolling(20).mean()
+        vol_avg = vol.rolling(20).mean()
         if pd.isna(sma20.iloc[-1]) or pd.isna(vol_avg.iloc[-1]):
             return 0
+
+        # === NEW FILTERS YOU ASKED ===
+        # Skip dead stocks: 5-day value < 5B
+        if len(df) >= 5:
+            val5 = float((close.iloc[-5:] * vol.iloc[-5:]).sum())
+            if val5 < 5_000_000_000:
+                return 0
+        # Skip distribution: down -5% but volume 3x
+        if close.pct_change(5).iloc[-1] < 0 and vol.iloc[-1] > vol_avg.iloc[-1]*3:
+            return 45
+        # === END FILTERS ===
+
         score = 50
         if close.iloc[-1] > sma20.iloc[-1]:
             score += 10
         if sma5.iloc[-1] > sma20.iloc[-1]:
             score += 10
-        if df['Volume'].iloc[-1] > vol_avg.iloc[-1]:
+        if vol.iloc[-1] > vol_avg.iloc[-1]:
             score += 5
         if close.pct_change(5).iloc[-1] > 0:
             score += 8
@@ -146,7 +159,7 @@ def backtest_stock(ticker):
         return None
     return {"ticker":ticker,"full":full,"train":train,"test":test}
 
-tab1, tab2 = st.tabs(["LIVE TODAY","BACKTEST v73 PROFESSIONAL"])
+tab1, tab2 = st.tabs(["LIVE TODAY","BACKTEST v74.1 PROFESSIONAL"])
 with tab1:
     rows=[]
     for t in STOCKS:
@@ -156,7 +169,7 @@ with tab1:
     st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
 with tab2:
-    st.write("v73 FIXES: 1=Compounded Net, 2=Entry-day check, 3=Gap handling, 4=Train 4mo / Test 2mo unseen")
+    st.write("v74.1 FIXES: TH 75, Target 4%, Stop 2%, Filter dead<5B + distribution")
     results=[]
     for t in STOCKS:
         with st.spinner(f"Backtesting {t}"):
@@ -167,7 +180,7 @@ with tab2:
     for r in results:
         summary.append({"Stock":r["ticker"],"Trades Full":r["full"]["trades"],"WR% Full":r["full"]["winrate"],"Net% Compounded Full":r["full"]["net_compounded"],"MaxDD%":r["full"]["max_dd"],"Trades Train 4mo":r["train"]["trades"],"WR Train":r["train"]["winrate"],"Trades Test 2mo":r["test"]["trades"],"WR Test (unseen)":r["test"]["winrate"],"Net% Test":r["test"]["net_compounded"]})
     st.dataframe(pd.DataFrame(summary), use_container_width=True)
-    st.warning("If Trades Test <5, win rate is not reliable. Need more trades. If WR Test <50%, threshold 61 not valid on unseen data.")
+    st.warning("If Trades Test <5, not reliable. WR Test <50% = threshold not valid.")
     sel=st.selectbox("Detail", STOCKS)
     for r in results:
         if r["ticker"]==sel:
